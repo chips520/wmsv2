@@ -3,3 +3,4 @@ uvicorn[standard]
 SQLAlchemy
 python-dotenv
 requests
+pypiwin32
