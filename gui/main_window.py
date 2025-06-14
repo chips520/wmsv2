@@ -81,6 +81,10 @@ class AppServiceGUI:
         self.stop_button.pack(side=tk.LEFT, padx=5, pady=5)
         self.restart_button = ttk.Button(service_control_frame, text=_("Restart Service"), command=self.restart_service_command)
         self.restart_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.remove_button = ttk.Button(service_control_frame, text=_("Remove Service"), command=self.remove_service_command)
+        self.remove_button.pack(side=tk.LEFT, padx=5, pady=5)
+
         self.status_label = ttk.Label(service_control_frame, text=_("Service Status: Unknown"), width=30)
         self.status_label.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
 
@@ -196,6 +200,8 @@ class AppServiceGUI:
         sc_children[0].config(text=_("Start Service")) # start_button
         sc_children[1].config(text=_("Stop Service"))  # stop_button
         sc_children[2].config(text=_("Restart Service"))# restart_button
+        if hasattr(self, 'remove_button'): # Check if button exists
+            self.remove_button.config(text=_("Remove Service"))
         # status_label text is handled in check_service_status
 
         # Tray Query Frame children
@@ -300,17 +306,68 @@ class AppServiceGUI:
                 except Exception: status_text_val += " | API Check Error"
             else: status_text_val += _(" | API Check Skipped (requests missing)")
             self.start_button.config(state=tk.DISABLED); self.stop_button.config(state=tk.NORMAL); self.restart_button.config(state=tk.NORMAL)
+            if hasattr(self, 'remove_button'): self.remove_button.config(state=tk.NORMAL)
         elif status == "STOPPED":
             self.start_button.config(state=tk.NORMAL); self.stop_button.config(state=tk.DISABLED); self.restart_button.config(state=tk.DISABLED)
+            if hasattr(self, 'remove_button'): self.remove_button.config(state=tk.NORMAL)
         elif status == "NOT INSTALLED" or status == "SC_NOT_FOUND":
             self.start_button.config(state=tk.DISABLED); self.stop_button.config(state=tk.DISABLED); self.restart_button.config(state=tk.DISABLED)
+            if hasattr(self, 'remove_button'): self.remove_button.config(state=tk.DISABLED)
         elif status in ["START_PENDING", "STOP_PENDING"]:
             self.start_button.config(state=tk.DISABLED); self.stop_button.config(state=tk.DISABLED); self.restart_button.config(state=tk.DISABLED)
+            if hasattr(self, 'remove_button'): self.remove_button.config(state=tk.DISABLED) # Disable remove during pending states for safety
         else: # UNKNOWN, QUERY_ERROR
             self.start_button.config(state=tk.NORMAL); self.stop_button.config(state=tk.NORMAL); self.restart_button.config(state=tk.NORMAL)
+            if hasattr(self, 'remove_button'): self.remove_button.config(state=tk.NORMAL)
         self.status_label.config(text=status_text_val)
 
     def check_service_status_periodically(self): self.check_service_status(); self.master.after(5000, self.check_service_status_periodically)
+
+    def remove_service_command(self):
+        if not messagebox.askyesno(_("Confirm Remove"), _("Are you sure you want to remove the WMS service? This requires Administrator privileges.")):
+            return
+
+        # Attempt to stop the service first.
+        # A more robust solution would check status after stop attempt.
+        # For this subtask, we proceed after a delay.
+        self.stop_service_command()
+        self.master.after(2000, self._proceed_with_remove_service)
+
+    def _proceed_with_remove_service(self):
+        # Construct path to service.py, assuming it's in ../app/service.py relative to this GUI file
+        service_script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'app', 'service.py'))
+
+        if not os.path.exists(service_script_path):
+            messagebox.showerror(_("Error"), _("service.py not found at expected location: {}").format(service_script_path))
+            return
+
+        remove_command = [sys.executable, service_script_path, 'remove']
+
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+
+            result = subprocess.run(remove_command, capture_output=True, text=True, check=False, startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+
+            if result.returncode == 0:
+                messagebox.showinfo(_("Success"), _("Service {} removed successfully.").format(self.SERVICE_NAME))
+            else:
+                output_text = result.stderr.strip() if result.stderr else result.stdout.strip()
+                if "Access is denied" in output_text or "privileges" in output_text.lower() or "Administrator" in output_text:
+                    messagebox.showerror(_("Permission Error"), _("Failed to remove service. Please run the GUI as Administrator."))
+                elif "service does not exist" in output_text.lower():
+                    messagebox.showerror(_("Service Error"), _("Service already removed or not installed."))
+                else:
+                    messagebox.showerror(_("Failed to Remove Service"), _("Failed to remove service {}:\n{}").format(self.SERVICE_NAME, output_text))
+
+        except FileNotFoundError:
+            messagebox.showerror(_("Error"), _("Python executable not found at {}. Cannot run remove script.").format(sys.executable))
+        except Exception as e:
+            messagebox.showerror(_("Error"), _("An unexpected error occurred while trying to remove the service: {}").format(e))
+
+        self.check_service_status()
+
 
     # --- CRUD Methods (Updated for new API structure) ---
     def _make_api_request(self, method, endpoint, json_data=None, params=None): # Identical
